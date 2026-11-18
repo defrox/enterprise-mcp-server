@@ -1,0 +1,34 @@
+name: Enterprise MCP Server CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go 1.22
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.22"
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests with race detector
+        run: go test -v -race ./...
+
+      - name: Build binary
+        run: go build -o mcp-server ./cmd/server
+
+      - name: Verify Distroless Docker image build
+        run: docker build -t enterprise-mcp-server:ci .

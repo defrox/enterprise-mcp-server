@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"log/slog"
+	"log"
 	"net/http"
-	"os"
-	"time"
+
+	"github.com/defrox/enterprise-mcp-server/internal/audit"
+	"github.com/defrox/enterprise-mcp-server/internal/auth"
+	"github.com/defrox/enterprise-mcp-server/internal/tools"
 )
 
 type MCPRequest struct {
@@ -15,38 +17,38 @@ type MCPRequest struct {
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	siem := audit.NewSIEMLogger()
 
 	http.HandleFunc("/mcp/execute", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
 		var req MCPRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
+			http.Error(w, "invalid json payload", http.StatusBadRequest)
 			return
 		}
-		if req.Role != "ai-analyst" && req.Role != "admin" {
-			logger.Warn("unauthorized_mcp_access", "tool", req.Tool, "role", req.Role)
-			http.Error(w, "forbidden", http.StatusForbidden)
+
+		if !auth.IsAuthorized(req.Role, req.Tool) {
+			siem.LogDecision(req.Role, req.Tool, false, "rbac_policy_violation")
+			http.Error(w, "forbidden: role not authorized for tool", http.StatusForbidden)
 			return
 		}
-		logger.Info("mcp_tool_invoked",
-			"tool", req.Tool,
-			"role", req.Role,
-			"timestamp", time.Now().UTC().Format(time.RFC3339),
-		)
+
+		result, err := tools.ExecuteReadOnlyTool(req.Tool, req.Params)
+		if err != nil {
+			siem.LogDecision(req.Role, req.Tool, false, err.Error())
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		siem.LogDecision(req.Role, req.Tool, true, "authorized_execution")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "executed",
-			"tool":   req.Tool,
-		})
+		_ = json.NewEncoder(w).Encode(result)
 	})
 
-	logger.Info("Enterprise MCP Server listening on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		logger.Error("server_failed", "error", err)
-		os.Exit(1)
-	}
+	log.Println("Enterprise MCP Server listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
